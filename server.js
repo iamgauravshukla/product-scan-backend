@@ -69,10 +69,10 @@ const INGREDIENT_DATABASE = {
 
 // Budget ranges for filtering
 const BUDGET_RANGES = {
-    low: { min: 0, max: 20 },
-    mid: { min: 20, max: 50 },
-    high: { min: 50, max: 100 },
-    luxury: { min: 100, max: 999999 }
+    low: { min: 0, max: 300 },
+    mid: { min: 300, max: 500 },
+    high: { min: 500, max: 1000 },
+    luxury: { min: 1000, max: 999999 }
 };
 
 // Optimize Image
