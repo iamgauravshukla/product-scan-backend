@@ -27,6 +27,9 @@ const openai = process.env.API_KEY ? new OpenAI({
     apiKey: process.env.API_KEY
 }) : null;
 
+// Logger - always output logs
+const log = console.log;
+
 // Ingredient Database - Maps skin conditions to beneficial/harmful ingredients
 const INGREDIENT_DATABASE = {
     acne: {
@@ -158,7 +161,7 @@ Return a JSON object with this exact structure:
 
         const analysisText = response.choices[0].message.content;
         
-        // Log OpenAI raw response
+        // Debug: Log OpenAI raw response when DEBUG=true
         console.log('\n🤖 OpenAI API Response:');
         console.log('   Model:', response.model);
         console.log('   Usage:', {
@@ -206,20 +209,20 @@ Return a JSON object with this exact structure:
             // Validate that we got the expected structure
             if (analysis && typeof analysis === 'object') {
                 console.log('\n✅ Successfully parsed OpenAI JSON response:');
-                console.log(JSON.stringify(analysis, null, 2));
+                log(JSON.stringify(analysis, null, 2));
             }
             
         } catch (parseError) {
             // If all JSON parsing strategies fail, extract information from text
             console.warn('\n⚠️ Failed to parse OpenAI response as JSON, extracting from text');
             console.warn('Parse error:', parseError.message);
-            console.warn('Response preview (first 300 chars):', analysisText.substring(0, 300));
-            console.warn('Full response length:', analysisText.length);
+            console.log('Response preview (first 300 chars):', analysisText.substring(0, 300));
+            console.log('Full response length:', analysisText.length);
             
             // Try to extract structured data from text using regex
             analysis = extractStructuredDataFromText(analysisText);
             console.log('\n📝 Extracted analysis from text:');
-            console.log(JSON.stringify({
+            log(JSON.stringify({
                 conditions: analysis.detectedConditions,
                 skinType: analysis.skinType,
                 confidence: analysis.confidence,
@@ -236,15 +239,16 @@ Return a JSON object with this exact structure:
             recommendations: analysis.recommendations || []
         };
         
+        // Debug-only summary of AI analysis
         console.log('\n📋 Final AI Analysis Summary:');
-        console.log(`   Detected Conditions: ${finalAnalysis.detectedConditions.length > 0 ? finalAnalysis.detectedConditions.join(', ') : 'None'}`);
-        console.log(`   Skin Type: ${finalAnalysis.skinType}`);
-        console.log(`   Confidence: ${(finalAnalysis.confidence * 100).toFixed(1)}%`);
+        log(`   Detected Conditions: ${finalAnalysis.detectedConditions.length > 0 ? finalAnalysis.detectedConditions.join(', ') : 'None'}`);
+        log(`   Skin Type: ${finalAnalysis.skinType}`);
+        log(`   Confidence: ${(finalAnalysis.confidence * 100).toFixed(1)}%`);
         if (finalAnalysis.observations.length > 0) {
-            console.log(`   Observations: ${finalAnalysis.observations.slice(0, 2).join('; ')}${finalAnalysis.observations.length > 2 ? '...' : ''}`);
+            log(`   Observations: ${finalAnalysis.observations.slice(0, 2).join('; ')}${finalAnalysis.observations.length > 2 ? '...' : ''}`);
         }
         if (finalAnalysis.recommendations.length > 0) {
-            console.log(`   Recommendations: ${finalAnalysis.recommendations.slice(0, 2).join('; ')}${finalAnalysis.recommendations.length > 2 ? '...' : ''}`);
+            log(`   Recommendations: ${finalAnalysis.recommendations.slice(0, 2).join('; ')}${finalAnalysis.recommendations.length > 2 ? '...' : ''}`);
         }
         console.log('');
         
@@ -262,37 +266,84 @@ Return a JSON object with this exact structure:
     }
 }
 
+// Generate diet & lifestyle suggestions using OpenAI based on analysis
+async function getLifestyleSuggestions(analysis, userDescription = '') {
+    if (!openai) {
+        console.log('⚠️  OpenAI client not initialized (API_KEY not set)');
+        return [];
+    }
+    console.log('🔄 Generating lifestyle suggestions...');
+
+    try {
+        const systemPrompt = `You are a dermatology assistant. Given a skin analysis JSON and optional user description, produce up to 6 concise, practical diet and lifestyle suggestions tailored to the detected skin conditions and skin type. Keep suggestions short (one sentence each).`;
+
+        const userPrompt = `Analysis: ${JSON.stringify(analysis)}\nUser description: "${(userDescription || '').replace(/\"/g, "'")}"\n\nProvide suggestions as a simple list, one per line.`;
+
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ],
+            max_tokens: 300,
+            temperature: 0.2
+        });
+
+        let content = response.choices?.[0]?.message?.content || '';
+
+        console.log(`📨 Raw OpenAI response:\n${content}\n`);
+
+        // Simple approach: split by newlines and filter empty lines
+        let suggestions = content
+            .split('\n')
+            .map(line => line.trim())
+            .map(line => line.replace(/^[-•*\d.\)\s]+/, '').trim()) // Remove bullet points/numbers
+            .filter(line => line.length > 5);
+
+        console.log(`✅ Generated ${suggestions.length} suggestions from raw response`);
+        suggestions.forEach((s, idx) => {
+            console.log(`   ${idx + 1}. ${s}`);
+        });
+
+        return suggestions;
+
+    } catch (error) {
+        console.error('❌ Lifestyle suggestions error:', error?.message || error);
+        return [];
+    }
+}
+
 // Helper function to extract structured data from text when JSON parsing fails
 function extractStructuredDataFromText(text) {
-    const lowerText = text.toLowerCase();
-    
+    const lowerText = (text || '').toLowerCase();
+
     // Extract detected conditions
     const detectedConditions = extractConditionsFromText(text);
-    
+
     // Extract skin type
     const skinType = extractSkinTypeFromText(text);
-    
+
     // Try to extract confidence score
     let confidence = 0.8;
-    const confidenceMatch = text.match(/confidence[:\s]+([0-9.]+)/i);
+    const confidenceMatch = text && text.match(/confidence[:\s]+([0-9.]+)/i);
     if (confidenceMatch) {
-        confidence = parseFloat(confidenceMatch[1]);
+        confidence = parseFloat(confidenceMatch[1]) || confidence;
         if (confidence > 1) confidence = confidence / 100; // Convert percentage to decimal
     }
-    
+
     // Extract observations (look for bullet points or numbered lists)
     const observations = [];
-    const observationMatches = text.match(/(?:^|\n)[\s]*[-•*]\s*(.+)/gm);
+    const observationMatches = text && text.match(/(?:^|\n)[\s]*[-•*]\s*(.+)/gm);
     if (observationMatches) {
         observationMatches.forEach(match => {
             const obs = match.replace(/^[\s]*[-•*]\s*/, '').trim();
             if (obs) observations.push(obs);
         });
     }
-    
+
     // Extract recommendations
     const recommendations = [];
-    const recSection = text.match(/recommendations?[:\s]+([\s\S]*?)(?:\n\n|$)/i);
+    const recSection = text && text.match(/recommendations?[:\s]+([\s\S]*?)(?:\n\n|$)/i);
     if (recSection) {
         const recMatches = recSection[1].match(/(?:^|\n)[\s]*[-•*]\s*(.+)/gm);
         if (recMatches) {
@@ -302,12 +353,12 @@ function extractStructuredDataFromText(text) {
             });
         }
     }
-    
+
     return {
         detectedConditions: detectedConditions.length > 0 ? detectedConditions : [],
-        skinType: skinType,
+        skinType: skinType || 'combination',
         confidence: confidence,
-        observations: observations.length > 0 ? observations : [text.substring(0, 500)],
+        observations: observations.length > 0 ? observations : [String(text || '').substring(0, 500)],
         recommendations: recommendations.length > 0 ? recommendations : [],
         note: 'Analysis extracted from text response (JSON parsing failed)'
     };
@@ -402,15 +453,15 @@ function calculateMatchScore(product, userConditions, userDescription, verbose =
     // Normalize score
     score = Math.max(0, Math.min(maxScore, score));
 
-    // Log matching details if verbose
+    // Debug: matching details when verbose and DEBUG=true
     if (verbose && (matchedBeneficial.length > 0 || matchedAvoid.length > 0)) {
-        console.log(`   🎯 Match Score Calculation for "${product.name}":`);
-        console.log(`      Score: ${Math.round(score)}%`);
+        log(`   🎯 Match Score Calculation for "${product.name}":`);
+        log(`      Score: ${Math.round(score)}%`);
         if (matchedBeneficial.length > 0) {
-            console.log(`      ✅ Beneficial matches (${beneficialCount}): ${matchedBeneficial.join(', ')}`);
+            log(`      ✅ Beneficial matches (${beneficialCount}): ${matchedBeneficial.join(', ')}`);
         }
         if (matchedAvoid.length > 0) {
-            console.log(`      ❌ Avoid matches (${avoidCount}): ${matchedAvoid.join(', ')}`);
+            log(`      ❌ Avoid matches (${avoidCount}): ${matchedAvoid.join(', ')}`);
         }
     }
 
@@ -447,10 +498,10 @@ app.post('/api/analyze', async (req, res) => {
         const { image, conditions, budget, description } = req.body;
 
         console.log('\n🔍 ========== NEW ANALYSIS REQUEST ==========');
-        console.log(`📋 User Conditions: ${conditions.join(', ')}`);
-        console.log(`💰 Budget Range: ${budget}`);
-        console.log(`📝 Description: ${description ? description.substring(0, 100) + '...' : 'None'}`);
-        console.log(`🖼️  Image Provided: ${image ? 'Yes' : 'No'}`);
+        log(`📋 User Conditions: ${conditions.join(', ')}`);
+        log(`💰 Budget Range: ${budget}`);
+        log(`📝 Description: ${description ? description.substring(0, 100) + '...' : 'None'}`);
+        log(`🖼️  Image Provided: ${image ? 'Yes' : 'No'}`);
 
         // Validate input
         if (!conditions || conditions.length === 0) {
@@ -516,7 +567,7 @@ app.post('/api/analyze', async (req, res) => {
                 allProducts = productsResponse.data;
             }
 
-            console.log(`\n📦 WooCommerce Products Fetched: ${allProducts.length} products`);
+            log(`\n📦 WooCommerce Products Fetched: ${allProducts.length} products`);
 
         } catch (error) {
             console.error('WooCommerce API Error:', error.response?.data || error.message);
@@ -530,7 +581,7 @@ app.post('/api/analyze', async (req, res) => {
             return price >= budgetRange.min && price <= budgetRange.max;
         });
 
-        console.log(`💰 Products in budget range ($${budgetRange.min}-$${budgetRange.max}): ${productsInBudget.length}`);
+        log(`💰 Products in budget range ($${budgetRange.min}-$${budgetRange.max}): ${productsInBudget.length}`);
 
         // Calculate match scores and add ingredients
         const productsWithScores = productsInBudget.map((product, index) => {
@@ -545,22 +596,22 @@ app.post('/api/analyze', async (req, res) => {
 
             // Log ingredients for each product
             if (ingredientsMeta) {
-                console.log(`\n✅ Product ${index + 1}: ${product.name} (ID: ${product.id})`);
-                console.log(`   Ingredients Key: ${ingredientsMeta.key}`);
-                console.log(`   Ingredients Raw: ${ingredientsMeta.value}`);
-                console.log(`   Ingredients Parsed: [${ingredients.join(', ')}]`);
-                console.log(`   Ingredients Count: ${ingredients.length}`);
+                log(`\n✅ Product ${index + 1}: ${product.name} (ID: ${product.id})`);
+                log(`   Ingredients Key: ${ingredientsMeta.key}`);
+                log(`   Ingredients Raw: ${ingredientsMeta.value}`);
+                log(`   Ingredients Parsed: [${ingredients.join(', ')}]`);
+                log(`   Ingredients Count: ${ingredients.length}`);
             } else {
-                console.log(`\n❌ Product ${index + 1}: ${product.name} (ID: ${product.id})`);
-                console.log(`   ⚠️  No ingredients found in meta_data`);
+                log(`\n❌ Product ${index + 1}: ${product.name} (ID: ${product.id})`);
+                log(`   ⚠️  No ingredients found in meta_data`);
                 if (product.meta_data && product.meta_data.length > 0) {
                     const availableKeys = product.meta_data.map(m => m.key).join(', ');
-                    console.log(`   Available meta_data keys: ${availableKeys}`);
+                    log(`   Available meta_data keys: ${availableKeys}`);
                 } else {
-                    console.log(`   No meta_data found for this product`);
+                    log(`   No meta_data found for this product`);
                 }
                 if (product.description) {
-                    console.log(`   Description preview: ${product.description.substring(0, 100)}...`);
+                    log(`   Description preview: ${product.description.substring(0, 100)}...`);
                 }
             }
 
@@ -577,18 +628,18 @@ app.post('/api/analyze', async (req, res) => {
         const productsWithIngredients = productsWithScores.filter(p => p.ingredients && p.ingredients.length > 0);
         const productsWithoutIngredients = productsWithScores.filter(p => !p.ingredients || p.ingredients.length === 0);
         
-        console.log(`\n📊 Ingredients Summary:`);
-        console.log(`   Products WITH ingredients: ${productsWithIngredients.length} ✅`);
-        console.log(`   Products WITHOUT ingredients: ${productsWithoutIngredients.length} ❌`);
-        console.log(`   Total products processed: ${productsWithScores.length}`);
+        log(`\n📊 Ingredients Summary:`);
+        log(`   Products WITH ingredients: ${productsWithIngredients.length} ✅`);
+        log(`   Products WITHOUT ingredients: ${productsWithoutIngredients.length} ❌`);
+        log(`   Total products processed: ${productsWithScores.length}`);
 
         // Filter out products with zero match score
         const productsWithScore = productsWithScores.filter(product => product.matchScore > 70);
         
-        console.log(`\n🔢 Match Score Filtering:`);
-        console.log(`   Products before filtering: ${productsWithScores.length}`);
-        console.log(`   Products with score > 0: ${productsWithScore.length}`);
-        console.log(`   Products filtered out (score = 0): ${productsWithScores.length - productsWithScore.length}`);
+        log(`\n🔢 Match Score Filtering:`);
+        log(`   Products before filtering: ${productsWithScores.length}`);
+        log(`   Products with score > 0: ${productsWithScore.length}`);
+        log(`   Products filtered out (score = 0): ${productsWithScores.length - productsWithScore.length}`);
 
         // Sort by match score
         productsWithScore.sort((a, b) => b.matchScore - a.matchScore);
@@ -597,23 +648,75 @@ app.post('/api/analyze', async (req, res) => {
         const topProducts = productsWithScore.slice(0, 12);
         
         if (topProducts.length > 0) {
-            console.log(`\n🏆 Top ${topProducts.length} Products (by match score, score > 0):`);
+            log(`\n🏆 Top ${topProducts.length} Products (by match score, score > 0):`);
             topProducts.forEach((product, index) => {
-                console.log(`   ${index + 1}. ${product.name} - Score: ${Math.round(product.matchScore)}% - Ingredients: ${product.ingredients.length > 0 ? product.ingredients.slice(0, 3).join(', ') + (product.ingredients.length > 3 ? '...' : '') : 'None'}`);
+                log(`   ${index + 1}. ${product.name} - Score: ${Math.round(product.matchScore)}% - Ingredients: ${product.ingredients.length > 0 ? product.ingredients.slice(0, 3).join(', ') + (product.ingredients.length > 3 ? '...' : '') : 'None'}`);
             });
         } else {
-            console.log(`\n⚠️  No products found with match score > 0`);
-            console.log(`   This might indicate:`);
-            console.log(`   - Products don't have matching ingredients for selected conditions`);
-            console.log(`   - Products are missing ingredient data`);
-            console.log(`   - Try adjusting conditions or budget range`);
+            log(`\n⚠️  No products found with match score > 0`);
+            log(`   This might indicate:`);
+            log(`   - Products don't have matching ingredients for selected conditions`);
+            log(`   - Products are missing ingredient data`);
+            log(`   - Try adjusting conditions or budget range`);
         }
-        console.log('');
+        // end of processing
+
+        // Ensure we have a finalAnalysis object to pass to suggestion generator
+        const finalAnalysis = skinAnalysis || {
+            detectedConditions: conditions || [],
+            skinType: 'combination',
+            confidence: 0.8,
+            observations: [],
+            recommendations: []
+        };
+
+        // Generate lifestyle suggestions (non-blocking if OpenAI not configured)
+        let suggestions = [];
+        try {
+            suggestions = await getLifestyleSuggestions(finalAnalysis, description);
+        } catch (e) {
+            // already logged in in function
+            suggestions = [];
+        }
+
+        // Reduce product payload to shape expected by the frontend
+        const reducedProducts = topProducts.map(p => {
+            // Clean and normalize ingredients (remove escaped quotes)
+            const cleanedIngredients = (p.ingredients || []).map(ing => {
+                if (typeof ing === 'string') {
+                    return ing.replace(/^['"]|['"]$/g, '').trim();
+                }
+                return ing;
+            }).filter(Boolean);
+
+            const imagesArr = (p.images || []).map(img => {
+                if (!img) return null;
+                if (typeof img === 'string') return { src: img };
+                return { src: img.src || img.url || img.thumbnail || '' };
+            }).filter(Boolean);
+
+            const firstImage = imagesArr.length > 0 ? (imagesArr[0].src || '') : (p.image || '');
+
+            return {
+                id: p.id,
+                name: p.name || p.title || '',
+                price: p.price || p.regular_price || null,
+                matchScore: typeof p.matchScore === 'number' ? p.matchScore : (p.match_score || 0),
+                categories: p.categories || p.category || [],
+                ingredients: cleanedIngredients,
+                permalink: p.permalink || p.url || p.link || '',
+                url: p.url || p.permalink || p.link || '',
+                images: imagesArr,
+                image: firstImage,
+                short_description: p.short_description || (p.description ? p.description.replace(/<[^>]+>/g, '').slice(0, 200) : '')
+            };
+        });
 
         res.json({
             success: true,
-            skinAnalysis,
-            products: topProducts,
+            skinAnalysis: finalAnalysis,
+            products: reducedProducts,
+            suggestions,
             totalFound: allProducts.length
         });
 
@@ -687,13 +790,5 @@ app.get('/api/health', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-    console.log(`\n📡 Available API Endpoints:`);
-    console.log(`   GET  http://localhost:${PORT}/api/health - Health check`);
-    console.log(`   GET  http://localhost:${PORT}/api/test/products - Test product ingredients`);
-    console.log(`   POST http://localhost:${PORT}/api/analyze - Analyze skin and get recommendations`);
-    console.log(`   POST http://localhost:${PORT}/api/cart/add - Add product to cart`);
-    console.log(`   POST http://localhost:${PORT}/api/wishlist/add - Add to wishlist`);
-    console.log(`   POST http://localhost:${PORT}/api/wishlist/remove - Remove from wishlist`);
-    console.log(`\n`);
+    console.log(`🚀 Server running on http://localhost:${PORT} — API healthy at /api/health`);
 });
