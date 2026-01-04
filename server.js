@@ -98,6 +98,71 @@ async function optimizeImage(base64Image) {
     }
 }
 
+// Validate that the image is a human face selfie
+async function validateFaceSelfie(base64Image) {
+    if (!openai) {
+        console.warn('OpenAI not configured, skipping face validation');
+        return { isValid: true, message: 'Validation skipped' };
+    }
+
+    try {
+        // Remove data:image/...;base64, prefix if present
+        const imageData = base64Image.includes(',') 
+            ? base64Image.split(',')[1] 
+            : base64Image;
+
+        const response = await openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: [
+                {
+                    role: "system",
+                    content: "You are an image validator. Check if the uploaded image is a clear photo of a human face (selfie, front-facing face photo). Respond with ONLY a JSON object in this format: {\"isHumanFace\": true/false, \"reason\": \"explanation\"}"
+                },
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: "Is this a clear photo of a human face? Respond with ONLY a JSON object: {\"isHumanFace\": true/false, \"reason\": \"brief reason\"}"
+                        },
+                        {
+                            type: "image_url",
+                            image_url: {
+                                url: `data:image/jpeg;base64,${imageData}`
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens: 100,
+            temperature: 0.1
+        });
+
+        const validationResponse = response.choices[0].message.content;
+        console.log(`\n✅ Face validation response: ${validationResponse}`);
+
+        try {
+            const parsed = JSON.parse(validationResponse);
+            return {
+                isValid: parsed.isHumanFace === true,
+                message: parsed.reason || 'Image validation completed'
+            };
+        } catch (e) {
+            // If response isn't valid JSON, try to infer from text
+            const text = validationResponse.toLowerCase();
+            const isValid = !text.includes('not') && !text.includes('invalid') && text.includes('face');
+            return {
+                isValid,
+                message: validationResponse
+            };
+        }
+    } catch (error) {
+        console.error('Face validation error:', error?.message);
+        // If validation fails, allow the image (fail open for safety)
+        return { isValid: true, message: 'Validation service unavailable' };
+    }
+}
+
 // Analyze skin image using OpenAI Vision API
 async function analyzeSkinImage(base64Image) {
     if (!openai) {
@@ -507,6 +572,22 @@ app.post('/api/analyze', async (req, res) => {
         if (!conditions || conditions.length === 0) {
             return res.status(400).json({ error: 'Please select at least one skin condition' });
         }
+
+        if (!image) {
+            return res.status(400).json({ error: 'Please upload a face selfie image' });
+        }
+
+        // Validate that image is a human face
+        console.log('🔎 Validating face image...');
+        const faceValidation = await validateFaceSelfie(image);
+        
+        if (!faceValidation.isValid) {
+            console.log(`❌ Face validation failed: ${faceValidation.message}`);
+            return res.status(400).json({ 
+                error: 'Invalid image - Please upload a clear photo of your face. The image must show a human face clearly.'
+            });
+        }
+        console.log(`✅ Face validation passed: ${faceValidation.message}`);
 
         // Optimize image
         let optimizedImage;
