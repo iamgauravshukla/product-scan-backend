@@ -33,50 +33,210 @@ const log = console.log;
 // Ingredient Database - Maps skin conditions to beneficial/harmful ingredients
 const INGREDIENT_DATABASE = {
     acne: {
-        beneficial: ['salicylic acid', 'benzoyl peroxide', 'niacinamide', 'tea tree', 'zinc', 'sulfur'],
-        avoid: ['coconut oil', 'cocoa butter', 'palm oil', 'isopropyl myristate']
+        beneficial: [
+            'salicylic acid', 'capryloyl salicylic acid', 'benzoyl peroxide', 
+            'niacinamide', 'tea tree', 'zinc', 'sulfur', 'glycolic acid',
+            'sodium hyaluronate', 'adenosine', 'tocopherol', 'ascorbyl glucoside',
+            'sodium lactate', 'hydroxyacetophenone', 'caprylic/capric triglyceride'
+        ],
+        avoid: [
+            'coconut oil', 'cocoa butter', 'palm oil', 'isopropyl myristate',
+            'stearyl alcohol', 'ceteareth-6', 'parfum/fragrance', 'alcohol denat.',
+            'methylparaben', 'synthetic wax', 'dimethicone'
+        ]
     },
     oily: {
-        beneficial: ['niacinamide', 'salicylic acid', 'clay', 'charcoal', 'witch hazel', 'zinc'],
-        avoid: ['mineral oil', 'petrolatum', 'silicones', 'heavy oils']
+        beneficial: [
+            'niacinamide', 'salicylic acid', 'capryloyl salicylic acid', 
+            'clay', 'charcoal', 'witch hazel', 'zinc', 'silica',
+            'glycolic acid', 'alcohol denat.', 'hydroxyacetophenone'
+        ],
+        avoid: [
+            'mineral oil', 'petrolatum', 'silicones', 'heavy oils',
+            'dimethicone', 'isohexadecane', 'caprylic/capric triglyceride',
+            'stearyl alcohol', 'ceteareth-6', 'synthetic wax'
+        ]
     },
     dry: {
-        beneficial: ['hyaluronic acid', 'glycerin', 'ceramides', 'squalane', 'shea butter', 'jojoba oil'],
-        avoid: ['alcohol denat', 'fragrance', 'sulfates', 'high pH cleansers']
+        beneficial: [
+            'hyaluronic acid', 'sodium hyaluronate', 'glycerin', 'ceramides', 
+            'squalane', 'shea butter', 'jojoba oil', 'caprylic/capric triglyceride',
+            'dimethicone', 'tocopherol', 'tocopheryl acetate', 'butylene glycol',
+            'pentylene glycol', 'propanediol', 'dipropylene glycol', 'glyceryl stearate',
+            'stearyl alcohol', 'ceteareth-6'
+        ],
+        avoid: [
+            'alcohol denat.', 'fragrance', 'parfum/fragrance', 'sulfates', 
+            'high ph cleansers', 'sodium lauryl sulfate', 'methylparaben',
+            'phenoxyethanol'
+        ]
     },
     sensitive: {
-        beneficial: ['centella asiatica', 'aloe vera', 'oat', 'chamomile', 'allantoin', 'bisabolol'],
-        avoid: ['fragrance', 'essential oils', 'alcohol', 'retinol', 'high concentrations of acids']
+        beneficial: [
+            'centella asiatica', 'aloe vera', 'oat', 'chamomile', 'allantoin', 
+            'bisabolol', 'niacinamide', 'sodium hyaluronate', 'glycerin',
+            'dipotassium glycyrrhizate', 'tocopherol', 'adenosine',
+            'caprylic/capric triglyceride', 'propanediol'
+        ],
+        avoid: [
+            'fragrance', 'parfum/fragrance', 'essential oils', 'alcohol', 
+            'alcohol denat.', 'retinol', 'retinyl palmitate', 'high concentrations of acids',
+            'linalool', 'citronellol', 'limonene', 'benzyl alcohol', 'benzyl salicylate',
+            'geraniol', 'hexyl cinnamal', 'methylparaben', 'phenoxyethanol'
+        ]
     },
     redness: {
-        beneficial: ['centella asiatica', 'niacinamide', 'azelaic acid', 'green tea', 'licorice root'],
-        avoid: ['fragrance', 'menthol', 'eucalyptus', 'high concentrations of vitamin c']
+        beneficial: [
+            'centella asiatica', 'niacinamide', 'azelaic acid', 'green tea', 
+            'licorice root', 'dipotassium glycyrrhizate', 'sodium hyaluronate',
+            'tocopherol', 'adenosine', 'glycerin', 'paeonia suffruticosa root extract',
+            'caprylic/capric triglyceride'
+        ],
+        avoid: [
+            'fragrance', 'parfum/fragrance', 'menthol', 'eucalyptus', 
+            'high concentrations of vitamin c', 'alcohol denat.',
+            'linalool', 'citronellol', 'limonene', 'benzyl alcohol'
+        ]
     },
     'dark-spots': {
-        beneficial: ['vitamin c', 'niacinamide', 'kojic acid', 'alpha arbutin', 'licorice root', 'azelaic acid'],
-        avoid: ['harsh scrubs', 'fragrance']
+        beneficial: [
+            'vitamin c', 'ascorbyl glucoside', 'niacinamide', 'kojic acid', 
+            'alpha arbutin', 'licorice root', 'dipotassium glycyrrhizate',
+            'azelaic acid', 'glycolic acid', 'retinol', 'retinyl palmitate',
+            'tocopherol', 'adenosine', 'paeonia suffruticosa root extract',
+            'pancratium maritimum extract'
+        ],
+        avoid: [
+            'harsh scrubs', 'fragrance', 'parfum/fragrance', 'alcohol denat.',
+            'methylparaben'
+        ]
     },
     wrinkles: {
-        beneficial: ['retinol', 'peptides', 'vitamin c', 'hyaluronic acid', 'niacinamide', 'coenzyme q10'],
-        avoid: ['fragrance', 'alcohol denat']
+        beneficial: [
+            'retinol', 'retinyl palmitate', 'peptides', 'palmitoyl tripeptide-1',
+            'palmitoyl tetrapeptide-7', 'vitamin c', 'ascorbyl glucoside',
+            'hyaluronic acid', 'sodium hyaluronate', 'niacinamide', 
+            'coenzyme q10', 'glycerin', 'adenosine', 'tocopherol',
+            'tocopheryl acetate', 'glycolic acid', 'dimethicone',
+            'caprylic/capric triglyceride'
+        ],
+        avoid: [
+            'fragrance', 'parfum/fragrance', 'alcohol denat.', 'harsh scrubs',
+            'methylparaben'
+        ]
     },
     'large-pores': {
-        beneficial: ['niacinamide', 'salicylic acid', 'retinol', 'clay masks', 'azelaic acid'],
-        avoid: ['heavy oils', 'silicones']
+        beneficial: [
+            'niacinamide', 'salicylic acid', 'capryloyl salicylic acid',
+            'retinol', 'retinyl palmitate', 'clay masks', 'azelaic acid',
+            'glycolic acid', 'silica', 'adenosine'
+        ],
+        avoid: [
+            'heavy oils', 'silicones', 'dimethicone', 'isohexadecane',
+            'stearyl alcohol', 'synthetic wax'
+        ]
     },
     'uneven-texture': {
-        beneficial: ['glycolic acid', 'lactic acid', 'retinol', 'enzyme exfoliants', 'niacinamide'],
-        avoid: ['harsh scrubs', 'fragrance']
+        beneficial: [
+            'glycolic acid', 'lactic acid', 'retinol', 'retinyl palmitate',
+            'enzyme exfoliants', 'niacinamide', 'salicylic acid',
+            'capryloyl salicylic acid', 'ascorbyl glucoside', 'adenosine',
+            'sodium hyaluronate'
+        ],
+        avoid: [
+            'harsh scrubs', 'fragrance', 'parfum/fragrance', 'alcohol denat.',
+            'methylparaben'
+        ]
     }
 };
 
 // Budget ranges for filtering
 const BUDGET_RANGES = {
-    low: { min: 0, max: 300 },
-    mid: { min: 300, max: 500 },
-    high: { min: 500, max: 1000 },
-    luxury: { min: 1000, max: 999999 }
+    low: { min: 0, max: 1000 },
+    mid: { min: 0, max: 2500 },
+    high: { min: 2500, max: 5000 },
+    luxury: { min: 5000, max: 999999 }
 };
+
+// Valid skin conditions
+const VALID_CONDITIONS = [
+    'acne', 'dark-spots', 'wrinkles', 'redness', 'large-pores',
+    'uneven-texture', 'dry', 'oily', 'sensitive'
+];
+
+// Input Validation Helper Functions
+function validateConditions(conditions) {
+    if (!Array.isArray(conditions)) {
+        return { valid: false, error: 'Conditions must be an array' };
+    }
+    if (conditions.length === 0) {
+        return { valid: false, error: 'Please select at least one skin condition' };
+    }
+    if (conditions.length > 5) {
+        return { valid: false, error: 'Maximum 5 conditions allowed' };
+    }
+    
+    // Check if all conditions are valid
+    const invalid = conditions.filter(c => !VALID_CONDITIONS.includes(c));
+    if (invalid.length > 0) {
+        return { valid: false, error: `Invalid condition(s): ${invalid.join(', ')}. Valid options: ${VALID_CONDITIONS.join(', ')}` };
+    }
+    
+    return { valid: true };
+}
+
+function validateBudget(budget) {
+    if (!budget) {
+        return { valid: true }; // Budget is optional
+    }
+    if (typeof budget !== 'string') {
+        return { valid: false, error: 'Budget must be a string' };
+    }
+    if (!BUDGET_RANGES[budget.toLowerCase()]) {
+        return { valid: false, error: `Invalid budget. Valid options: ${Object.keys(BUDGET_RANGES).join(', ')}` };
+    }
+    return { valid: true };
+}
+
+function validateDescription(description) {
+    if (!description) {
+        return { valid: true }; // Description is optional
+    }
+    if (typeof description !== 'string') {
+        return { valid: false, error: 'Description must be a string' };
+    }
+    if (description.length > 500) {
+        return { valid: false, error: 'Description must be 500 characters or less' };
+    }
+    if (description.length < 3) {
+        return { valid: false, error: 'Description must be at least 3 characters' };
+    }
+    return { valid: true };
+}
+
+function validateImage(image) {
+    if (!image) {
+        return { valid: false, error: 'Image is required. Please upload a face selfie' };
+    }
+    if (typeof image !== 'string') {
+        return { valid: false, error: 'Image must be a base64 string' };
+    }
+    
+    // Check image size (rough estimate: base64 is ~4/3 of binary size)
+    const estimatedSizeInBytes = (image.length * 3) / 4;
+    const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+    
+    if (estimatedSizeInBytes > MAX_IMAGE_SIZE) {
+        return { valid: false, error: 'Image is too large. Maximum size: 10MB' };
+    }
+    
+    // Check if it's a valid base64 data URI
+    if (!image.includes('base64') && !image.match(/^[A-Za-z0-9+/=]+$/)) {
+        return { valid: false, error: 'Invalid image format. Must be base64 encoded' };
+    }
+    
+    return { valid: true };
+}
 
 // Optimize Image
 async function optimizeImage(base64Image) {
@@ -563,19 +723,42 @@ app.post('/api/analyze', async (req, res) => {
         const { image, conditions, budget, description } = req.body;
 
         console.log('\n🔍 ========== NEW ANALYSIS REQUEST ==========');
+
+        // Validate all inputs first
+        console.log('✅ Validating input data...');
+        
+        // Validate conditions
+        const conditionsValidation = validateConditions(conditions);
+        if (!conditionsValidation.valid) {
+            console.log(`❌ Conditions validation failed: ${conditionsValidation.error}`);
+            return res.status(400).json({ error: conditionsValidation.error });
+        }
+
+        // Validate budget
+        const budgetValidation = validateBudget(budget);
+        if (!budgetValidation.valid) {
+            console.log(`❌ Budget validation failed: ${budgetValidation.error}`);
+            return res.status(400).json({ error: budgetValidation.error });
+        }
+
+        // Validate description
+        const descriptionValidation = validateDescription(description);
+        if (!descriptionValidation.valid) {
+            console.log(`❌ Description validation failed: ${descriptionValidation.error}`);
+            return res.status(400).json({ error: descriptionValidation.error });
+        }
+
+        // Validate image
+        const imageValidation = validateImage(image);
+        if (!imageValidation.valid) {
+            console.log(`❌ Image validation failed: ${imageValidation.error}`);
+            return res.status(400).json({ error: imageValidation.error });
+        }
+
         log(`📋 User Conditions: ${conditions.join(', ')}`);
-        log(`💰 Budget Range: ${budget}`);
+        log(`💰 Budget Range: ${budget || 'Any'}`);
         log(`📝 Description: ${description ? description.substring(0, 100) + '...' : 'None'}`);
-        log(`🖼️  Image Provided: ${image ? 'Yes' : 'No'}`);
-
-        // Validate input
-        if (!conditions || conditions.length === 0) {
-            return res.status(400).json({ error: 'Please select at least one skin condition' });
-        }
-
-        if (!image) {
-            return res.status(400).json({ error: 'Please upload a face selfie image' });
-        }
+        log(`🖼️  Image Provided: Yes (${(image.length * 3 / 4 / 1024).toFixed(2)}KB)`);
 
         // Validate that image is a human face
         console.log('🔎 Validating face image...');
