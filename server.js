@@ -898,7 +898,7 @@ app.post('/api/analyze', async (req, res) => {
         log(`   Total products processed: ${productsWithScores.length}`);
 
         // Filter out products with zero match score
-        const productsWithScore = productsWithScores.filter(product => product.matchScore > 70);
+        const productsWithScore = productsWithScores.filter(product => product.matchScore >= 40);
         
         log(`\n🔢 Match Score Filtering:`);
         log(`   Products before filtering: ${productsWithScores.length}`);
