@@ -14,6 +14,10 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static('../'));
 
+// Add compression for faster response times
+const compression = require('compression');
+app.use(compression());
+
 // WooCommerce API Configuration
 const WooCommerce = new WooCommerceRestApi({
     url: process.env.WOOCOMMERCE_URL,
@@ -29,6 +33,103 @@ const openai = process.env.API_KEY ? new OpenAI({
 
 // Logger - always output logs
 const log = console.log;
+
+// Performance caches
+const productCache = new Map(); // Cache WooCommerce products
+const categoryCache = new Map(); // Cache categories
+const scoreCache = new Map(); // Cache score calculations
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const PRODUCT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes for products
+
+// Normalize and preprocess ingredients
+function normalizeIngredient(ingredient) {
+    return ingredient
+        .toLowerCase()
+        .trim()
+        .replace(/[()\[\]]/g, '') // Remove parentheses and brackets
+        .replace(/\s+/g, ' '); // Normalize spaces
+}
+
+// Create a Set of normalized ingredients for fast lookup
+function preprocessIngredients(ingredientsText) {
+    if (!ingredientsText) return new Set();
+    
+    const ingredients = typeof ingredientsText === 'string'
+        ? ingredientsText.split(/[,;\n]/).map(i => normalizeIngredient(i))
+        : ingredientsText.map(i => normalizeIngredient(i));
+    
+    return new Set(ingredients.filter(i => i.length > 0));
+}
+
+// Better ingredient matching with word boundaries and exact matches
+function hasIngredient(ingredientSet, searchIngredient) {
+    const normalized = normalizeIngredient(searchIngredient);
+    
+    // Direct match
+    if (ingredientSet.has(normalized)) return true;
+    
+    // Check for matches with word boundaries
+    for (const ingredient of ingredientSet) {
+        // Exact match
+        if (ingredient === normalized) return true;
+        
+        // Match as complete word (with boundaries)
+        const regex = new RegExp(`\\b${normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+        if (regex.test(ingredient)) return true;
+    }
+    
+    return false;
+}
+
+// Generate cache key for scoring (per product + conditions)
+// Note: Description is NOT included because it doesn't affect scoring algorithm
+// Only used for lifestyle suggestions. Image is also not included since
+// AI-detected conditions are merged into the conditions array.
+function generateScoreCacheKey(productId, conditions) {
+    return `${productId}_${conditions.sort().join('_')}`;
+}
+
+// Generate cache key for products (budget-based, NOT condition-based)
+function generateProductCacheKey(budget) {
+    return `products_budget_${budget}`;
+}
+
+// Clean expired cache entries periodically
+function cleanExpiredCache() {
+    const now = Date.now();
+    let cleaned = 0;
+    
+    // Clean score cache
+    for (const [key, value] of scoreCache.entries()) {
+        if (now - value.timestamp >= CACHE_TTL) {
+            scoreCache.delete(key);
+            cleaned++;
+        }
+    }
+    
+    // Clean product cache
+    for (const [key, value] of productCache.entries()) {
+        if (now - value.timestamp >= PRODUCT_CACHE_TTL) {
+            productCache.delete(key);
+            cleaned++;
+        }
+    }
+    
+    // Clean category cache
+    for (const [key, value] of categoryCache.entries()) {
+        if (now - value.timestamp >= PRODUCT_CACHE_TTL) {
+            categoryCache.delete(key);
+            cleaned++;
+        }
+    }
+    
+    if (cleaned > 0) {
+        console.log(`🧹 Cleaned ${cleaned} expired cache entries`);
+    }
+}
+
+// Clean cache every 10 minutes
+setInterval(cleanExpiredCache, 10 * 60 * 1000);
 
 // Ingredient Database - Maps skin conditions to beneficial/harmful ingredients
 const INGREDIENT_DATABASE = {
@@ -625,72 +726,117 @@ function extractSkinTypeFromText(text) {
     return 'combination'; // default
 }
 
-// Calculate product match score
+// Calculate product match score (optimized for large databases)
 function calculateMatchScore(product, userConditions, userDescription, verbose = false) {
+    // Check cache first (conditions-specific, not budget-specific)
+    const cacheKey = generateScoreCacheKey(product.id, userConditions);
+    const cached = scoreCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+        return cached.score;
+    }
+
     let score = 0;
     const maxScore = 100;
+    const weights = {
+        beneficial: 12,      // Points per beneficial ingredient
+        avoid: -25,          // Penalty per avoid ingredient
+        conditionMatch: 15,  // Bonus if product targets condition
+        nameMatch: 8,        // Bonus if condition in product name
+        concentration: 5     // Bonus for ingredient in first 5 ingredients
+    };
 
-    // Get product ingredients from meta_data
-    const ingredientsMeta = product.meta_data?.find(meta => meta.key === 'ingredients' || meta.key === '_ingredients');
-    const productIngredients = ingredientsMeta
-        ? ingredientsMeta.value.toLowerCase()
-        : product.description?.toLowerCase() || '';
+    // Get and preprocess product ingredients
+    const ingredientsMeta = product.meta_data?.find(meta => 
+        meta.key === 'ingredients' || meta.key === '_ingredients'
+    );
+    
+    let ingredientSet;
+    let ingredientsList = [];
+    
+    if (ingredientsMeta?.value) {
+        const rawIngredients = typeof ingredientsMeta.value === 'string'
+            ? ingredientsMeta.value
+            : ingredientsMeta.value.join(', ');
+        ingredientSet = preprocessIngredients(rawIngredients);
+        ingredientsList = Array.from(ingredientSet);
+    } else {
+        // Fallback to description
+        const descText = product.description?.toLowerCase() || '';
+        ingredientSet = preprocessIngredients(descText);
+        ingredientsList = Array.from(ingredientSet);
+    }
 
-    // Check for beneficial ingredients
+    // Track matches for debugging
     let beneficialCount = 0;
     let avoidCount = 0;
     const matchedBeneficial = [];
     const matchedAvoid = [];
 
+    // Process each user condition
     userConditions.forEach(condition => {
         const conditionData = INGREDIENT_DATABASE[condition];
         if (!conditionData) return;
 
-        // Check beneficial ingredients
-        conditionData.beneficial.forEach(ingredient => {
-            if (productIngredients.includes(ingredient.toLowerCase())) {
+        // Check beneficial ingredients with concentration bonus
+        conditionData.beneficial.forEach((ingredient, index) => {
+            if (hasIngredient(ingredientSet, ingredient)) {
+                let points = weights.beneficial;
+                
+                // Bonus if ingredient appears in first 5 (higher concentration)
+                if (ingredientsList.slice(0, 5).some(ing => ing.includes(normalizeIngredient(ingredient)))) {
+                    points += weights.concentration;
+                }
+                
+                score += points;
                 beneficialCount++;
-                matchedBeneficial.push(`${ingredient} (for ${condition})`);
+                matchedBeneficial.push(`${ingredient} (${condition})`);
             }
         });
 
-        // Check ingredients to avoid
+        // Check ingredients to avoid (more severe penalty)
         conditionData.avoid.forEach(ingredient => {
-            if (productIngredients.includes(ingredient.toLowerCase())) {
+            if (hasIngredient(ingredientSet, ingredient)) {
+                score += weights.avoid;
                 avoidCount++;
-                matchedAvoid.push(`${ingredient} (avoid for ${condition})`);
+                matchedAvoid.push(`${ingredient} (${condition})`);
             }
         });
-    });
 
-    // Calculate score
-    score += (beneficialCount * 15); // Up to 15 points per beneficial ingredient
-    score -= (avoidCount * 20); // Penalty for ingredients to avoid
-
-    // Check if product description mentions user's concerns
-    const descriptionLower = userDescription.toLowerCase();
-    userConditions.forEach(condition => {
-        if (productIngredients.includes(condition) || product.name.toLowerCase().includes(condition)) {
-            score += 10;
+        // Check if product targets the condition
+        const productNameLower = product.name.toLowerCase();
+        const productDescLower = (product.short_description || product.description || '').toLowerCase();
+        
+        if (productNameLower.includes(condition.replace('-', ' ')) || 
+            productNameLower.includes(condition)) {
+            score += weights.nameMatch;
+        }
+        
+        if (productDescLower.includes(condition.replace('-', ' ')) || 
+            productDescLower.includes(condition)) {
+            score += weights.conditionMatch;
         }
     });
 
-    // Normalize score
-    score = Math.max(0, Math.min(maxScore, score));
-
-    // Debug: matching details when verbose and DEBUG=true
-    if (verbose && (matchedBeneficial.length > 0 || matchedAvoid.length > 0)) {
-        log(`   🎯 Match Score Calculation for "${product.name}":`);
-        log(`      Score: ${Math.round(score)}%`);
-        if (matchedBeneficial.length > 0) {
-            log(`      ✅ Beneficial matches (${beneficialCount}): ${matchedBeneficial.join(', ')}`);
-        }
-        if (matchedAvoid.length > 0) {
-            log(`      ❌ Avoid matches (${avoidCount}): ${matchedAvoid.join(', ')}`);
-        }
+    // Quality multiplier based on ingredient count (more complete formulas score better)
+    if (ingredientsList.length > 10) {
+        score *= 1.1; // 10% bonus for complete ingredient list
     }
 
-    return score;
+    // Normalize score to 0-100 range
+    score = Math.max(0, Math.min(maxScore, score));
+
+    // Cache the result
+    scoreCache.set(cacheKey, {
+        score: Math.round(score),
+        timestamp: Date.now()
+    });
+
+    // Only log if explicitly verbose and score is significant
+    if (verbose && score >= 60) {
+        log(`   🎯 ${product.name}: ${Math.round(score)}% (✅${beneficialCount} ❌${avoidCount})`);
+    }
+
+    return Math.round(score);
 }
 
 // Get relevant product categories based on conditions
@@ -797,45 +943,61 @@ app.post('/api/analyze', async (req, res) => {
         // Get relevant categories
         const relevantCategories = getRelevantCategories(conditions);
 
-        // Fetch products from WooCommerce
+        // Fetch ALL products from WooCommerce with budget-based caching
+        // This way ALL users benefit from the same cache regardless of conditions
         let allProducts = [];
+        const productCacheKey = generateProductCacheKey(budget);
 
-        // First, try to get products from relevant categories
-        try {
-            const categoryResponse = await WooCommerce.get('products/categories', {
-                per_page: 100
-            });
+        // Check product cache first (budget-based, NOT condition-based)
+        const cachedProducts = productCache.get(productCacheKey);
+        if (cachedProducts && Date.now() - cachedProducts.timestamp < PRODUCT_CACHE_TTL) {
+            allProducts = cachedProducts.data;
+            log(`\n📦 Using cached products: ${allProducts.length} products (Cache Hit!)`);
+        } else {
+            // Fetch fresh products from WooCommerce
+            try {
+                const fetchStartTime = Date.now();
+                
+                // Strategy: Fetch ALL skincare products once, cache globally
+                // Then filter dynamically based on user conditions
+                
+                // Check category cache
+                let categories = categoryCache.get('all_categories');
+                if (!categories || Date.now() - categories.timestamp >= PRODUCT_CACHE_TTL) {
+                    const categoryResponse = await WooCommerce.get('products/categories', {
+                        per_page: 100
+                    });
+                    categories = { data: categoryResponse.data, timestamp: Date.now() };
+                    categoryCache.set('all_categories', categories);
+                }
 
-            const matchingCategories = categoryResponse.data.filter(cat =>
-                relevantCategories.some(relevantCat =>
-                    cat.name.toLowerCase().includes(relevantCat.toLowerCase())
-                )
-            );
-
-            // Fetch products from matching categories
-            for (const category of matchingCategories) {
+                // Fetch ALL skincare products (not filtered by condition-specific categories)
+                // This ensures all users benefit from the same cache
                 const productsResponse = await WooCommerce.get('products', {
-                    category: category.id,
-                    per_page: 20,
-                    status: 'publish'
-                });
-                allProducts = allProducts.concat(productsResponse.data);
-            }
-
-            // If no products found in categories, fetch all skincare products
-            if (allProducts.length === 0) {
-                const productsResponse = await WooCommerce.get('products', {
-                    per_page: 50,
+                    per_page: 100,
                     status: 'publish'
                 });
                 allProducts = productsResponse.data;
+
+                // Remove duplicates by ID
+                const uniqueProducts = Array.from(
+                    new Map(allProducts.map(p => [p.id, p])).values()
+                );
+                allProducts = uniqueProducts;
+
+                // Cache the results (shared across ALL condition combinations)
+                productCache.set(productCacheKey, {
+                    data: allProducts,
+                    timestamp: Date.now()
+                });
+
+                const fetchTime = Date.now() - fetchStartTime;
+                log(`\n📦 WooCommerce Products Fetched: ${allProducts.length} products (${fetchTime}ms, Cache Miss)`);
+
+            } catch (error) {
+                console.error('WooCommerce API Error:', error.response?.data || error.message);
+                return res.status(500).json({ error: 'Failed to fetch products from WooCommerce' });
             }
-
-            log(`\n📦 WooCommerce Products Fetched: ${allProducts.length} products`);
-
-        } catch (error) {
-            console.error('WooCommerce API Error:', error.response?.data || error.message);
-            return res.status(500).json({ error: 'Failed to fetch products from WooCommerce' });
         }
 
         // Filter by budget
@@ -847,39 +1009,32 @@ app.post('/api/analyze', async (req, res) => {
 
         log(`💰 Products in budget range ($${budgetRange.min}-$${budgetRange.max}): ${productsInBudget.length}`);
 
-        // Calculate match scores and add ingredients
-        const productsWithScores = productsInBudget.map((product, index) => {
+        // Calculate match scores efficiently with per-condition caching
+        log(`\n⚡ Scoring ${productsInBudget.length} products for conditions: [${conditions.join(', ')}]`);
+        const startTime = Date.now();
+        let scoreCacheHits = 0;
+        
+        const productsWithScores = productsInBudget.map(product => {
             // Extract ingredients from meta_data
             const ingredientsMeta = product.meta_data?.find(meta =>
                 meta.key === 'ingredients' || meta.key === '_ingredients'
             );
             
-            const ingredients = ingredientsMeta
-                ? ingredientsMeta.value.split(',').map(i => i.trim())
+            const ingredients = ingredientsMeta?.value
+                ? (typeof ingredientsMeta.value === 'string'
+                    ? ingredientsMeta.value.split(',').map(i => i.trim())
+                    : ingredientsMeta.value)
                 : [];
 
-            // Log ingredients for each product
-            if (ingredientsMeta) {
-                log(`\n✅ Product ${index + 1}: ${product.name} (ID: ${product.id})`);
-                log(`   Ingredients Key: ${ingredientsMeta.key}`);
-                log(`   Ingredients Raw: ${ingredientsMeta.value}`);
-                log(`   Ingredients Parsed: [${ingredients.join(', ')}]`);
-                log(`   Ingredients Count: ${ingredients.length}`);
-            } else {
-                log(`\n❌ Product ${index + 1}: ${product.name} (ID: ${product.id})`);
-                log(`   ⚠️  No ingredients found in meta_data`);
-                if (product.meta_data && product.meta_data.length > 0) {
-                    const availableKeys = product.meta_data.map(m => m.key).join(', ');
-                    log(`   Available meta_data keys: ${availableKeys}`);
-                } else {
-                    log(`   No meta_data found for this product`);
-                }
-                if (product.description) {
-                    log(`   Description preview: ${product.description.substring(0, 100)}...`);
-                }
+            // Check if score is cached for this product + condition combination
+            const scoreCacheKey = generateScoreCacheKey(product.id, conditions);
+            const cachedScore = scoreCache.get(scoreCacheKey);
+            if (cachedScore && Date.now() - cachedScore.timestamp < CACHE_TTL) {
+                scoreCacheHits++;
             }
 
-            const matchScore = calculateMatchScore(product, conditions, description, true); // verbose logging
+            // Calculate match score with optimized algorithm (uses cache internally)
+            const matchScore = calculateMatchScore(product, conditions, description, false);
 
             return {
                 ...product,
@@ -888,14 +1043,10 @@ app.post('/api/analyze', async (req, res) => {
             };
         });
 
-        // Summary log
-        const productsWithIngredients = productsWithScores.filter(p => p.ingredients && p.ingredients.length > 0);
-        const productsWithoutIngredients = productsWithScores.filter(p => !p.ingredients || p.ingredients.length === 0);
-        
-        log(`\n📊 Ingredients Summary:`);
-        log(`   Products WITH ingredients: ${productsWithIngredients.length} ✅`);
-        log(`   Products WITHOUT ingredients: ${productsWithoutIngredients.length} ❌`);
-        log(`   Total products processed: ${productsWithScores.length}`);
+        const processingTime = Date.now() - startTime;
+        const cacheHitRate = ((scoreCacheHits / productsWithScores.length) * 100).toFixed(1);
+        log(`✅ Scored ${productsWithScores.length} products in ${processingTime}ms (${(processingTime / productsWithScores.length).toFixed(1)}ms/product)`)
+        log(`   💾 Score cache hits: ${scoreCacheHits}/${productsWithScores.length} (${cacheHitRate}% hit rate)`);
 
         // Filter out products with zero match score
         const productsWithScore = productsWithScores.filter(product => product.matchScore >= 40);
