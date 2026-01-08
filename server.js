@@ -34,6 +34,24 @@ const openai = process.env.API_KEY ? new OpenAI({
 // Logger - always output logs
 const log = console.log;
 
+// Ingredient synonym mapping for better matching
+const INGREDIENT_SYNONYMS = {
+    'vitamin c': ['ascorbic acid', 'l-ascorbic acid', 'ascorbyl glucoside', 'sodium ascorbyl phosphate', 'magnesium ascorbyl phosphate', 'ascorbyl palmitate'],
+    'vitamin e': ['tocopherol', 'tocopheryl acetate', 'alpha-tocopherol'],
+    'vitamin b3': ['niacinamide', 'nicotinamide'],
+    'vitamin b5': ['panthenol', 'pantothenic acid', 'd-panthenol'],
+    'vitamin a': ['retinol', 'retinyl palmitate', 'retinyl acetate', 'retinoic acid', 'tretinoin'],
+    'hyaluronic acid': ['sodium hyaluronate', 'hyaluronate', 'ha'],
+    'aha': ['glycolic acid', 'lactic acid', 'mandelic acid', 'citric acid'],
+    'bha': ['salicylic acid', 'beta hydroxy acid'],
+    'peptides': ['palmitoyl tripeptide', 'palmitoyl tetrapeptide', 'acetyl hexapeptide', 'copper peptide'],
+    'ceramides': ['ceramide np', 'ceramide ap', 'ceramide eop', 'ceramide ns', 'ceramide 1', 'ceramide 2', 'ceramide 3']
+};
+
+// Good vs bad alcohols differentiation
+const FATTY_ALCOHOLS = ['cetyl alcohol', 'stearyl alcohol', 'cetearyl alcohol', 'behenyl alcohol', 'lauryl alcohol'];
+const DRYING_ALCOHOLS = ['alcohol denat.', 'sd alcohol', 'isopropyl alcohol', 'ethanol', 'methanol'];
+
 // Performance caches
 const productCache = new Map(); // Cache WooCommerce products
 const categoryCache = new Map(); // Cache categories
@@ -61,24 +79,59 @@ function preprocessIngredients(ingredientsText) {
     return new Set(ingredients.filter(i => i.length > 0));
 }
 
-// Better ingredient matching with word boundaries and exact matches
-function hasIngredient(ingredientSet, searchIngredient) {
+// Better ingredient matching with word boundaries, synonyms, and fuzzy logic
+function hasIngredient(ingredientSet, searchIngredient, returnScore = false) {
     const normalized = normalizeIngredient(searchIngredient);
     
-    // Direct match
-    if (ingredientSet.has(normalized)) return true;
-    
-    // Check for matches with word boundaries
-    for (const ingredient of ingredientSet) {
-        // Exact match
-        if (ingredient === normalized) return true;
-        
-        // Match as complete word (with boundaries)
-        const regex = new RegExp(`\\b${normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
-        if (regex.test(ingredient)) return true;
+    // Level 1: Direct exact match (100% confidence)
+    if (ingredientSet.has(normalized)) {
+        return returnScore ? 1.0 : true;
     }
     
-    return false;
+    // Level 2: Check for word boundary matches (95% confidence)
+    for (const ingredient of ingredientSet) {
+        if (ingredient === normalized) {
+            return returnScore ? 0.95 : true;
+        }
+        
+        const regex = new RegExp(`\\b${normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+        if (regex.test(ingredient)) {
+            return returnScore ? 0.95 : true;
+        }
+    }
+    
+    // Level 3: Check synonyms (90% confidence)
+    for (const [mainIngredient, synonyms] of Object.entries(INGREDIENT_SYNONYMS)) {
+        if (normalized === mainIngredient || synonyms.includes(normalized)) {
+            // Check if any synonym exists in product
+            const allVariants = [mainIngredient, ...synonyms];
+            for (const variant of allVariants) {
+                if (ingredientSet.has(normalizeIngredient(variant))) {
+                    return returnScore ? 0.9 : true;
+                }
+                // Check with word boundaries
+                for (const ingredient of ingredientSet) {
+                    const variantNorm = normalizeIngredient(variant);
+                    const regex = new RegExp(`\\b${variantNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+                    if (regex.test(ingredient)) {
+                        return returnScore ? 0.9 : true;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Level 4: Fuzzy match for common variations (70% confidence)
+    // Handle hyphen vs space: "hyaluronic-acid" vs "hyaluronic acid"
+    const fuzzyNormalized = normalized.replace(/[-_]/g, ' ');
+    for (const ingredient of ingredientSet) {
+        const fuzzyIngredient = ingredient.replace(/[-_]/g, ' ');
+        if (fuzzyIngredient === fuzzyNormalized) {
+            return returnScore ? 0.7 : true;
+        }
+    }
+    
+    return returnScore ? 0 : false;
 }
 
 // Generate cache key for scoring (per product + conditions)
@@ -777,10 +830,11 @@ function calculateMatchScore(product, userConditions, userDescription, verbose =
         const conditionData = INGREDIENT_DATABASE[condition];
         if (!conditionData) return;
 
-        // Check beneficial ingredients with concentration bonus
+        // Check beneficial ingredients with concentration bonus and confidence scoring
         conditionData.beneficial.forEach((ingredient, index) => {
-            if (hasIngredient(ingredientSet, ingredient)) {
-                let points = weights.beneficial;
+            const confidence = hasIngredient(ingredientSet, ingredient, true);
+            if (confidence > 0) {
+                let points = weights.beneficial * confidence; // Apply confidence multiplier
                 
                 // Bonus if ingredient appears in first 5 (higher concentration)
                 if (ingredientsList.slice(0, 5).some(ing => ing.includes(normalizeIngredient(ingredient)))) {
@@ -789,16 +843,38 @@ function calculateMatchScore(product, userConditions, userDescription, verbose =
                 
                 score += points;
                 beneficialCount++;
-                matchedBeneficial.push(`${ingredient} (${condition})`);
+                const confidenceLabel = confidence === 1 ? 'exact' : confidence >= 0.9 ? 'synonym' : 'fuzzy';
+                matchedBeneficial.push(`${ingredient} (${condition}, ${confidenceLabel})`);
             }
         });
 
         // Check ingredients to avoid (more severe penalty)
         conditionData.avoid.forEach(ingredient => {
-            if (hasIngredient(ingredientSet, ingredient)) {
-                score += weights.avoid;
+            // Special handling for alcohols - differentiate good vs bad
+            if (ingredient.toLowerCase().includes('alcohol')) {
+                const isDryingAlcohol = DRYING_ALCOHOLS.some(bad => 
+                    hasIngredient(ingredientSet, bad)
+                );
+                const isFattyAlcohol = FATTY_ALCOHOLS.some(good => 
+                    hasIngredient(ingredientSet, good)
+                );
+                
+                // Only penalize if it's a drying alcohol, not fatty alcohol
+                if (isDryingAlcohol && !isFattyAlcohol) {
+                    score += weights.avoid;
+                    avoidCount++;
+                    matchedAvoid.push(`${ingredient} (${condition}, drying)`);
+                }
+                // Skip penalty if it's a fatty alcohol
+                return;
+            }
+            
+            const confidence = hasIngredient(ingredientSet, ingredient, true);
+            if (confidence > 0) {
+                score += weights.avoid * confidence; // Apply confidence to penalty
                 avoidCount++;
-                matchedAvoid.push(`${ingredient} (${condition})`);
+                const confidenceLabel = confidence === 1 ? 'exact' : confidence >= 0.9 ? 'synonym' : 'fuzzy';
+                matchedAvoid.push(`${ingredient} (${condition}, ${confidenceLabel})`);
             }
         });
 
@@ -1123,7 +1199,10 @@ app.post('/api/analyze', async (req, res) => {
                 url: p.url || p.permalink || p.link || '',
                 images: imagesArr,
                 image: firstImage,
-                short_description: p.short_description || (p.description ? p.description.replace(/<[^>]+>/g, '').slice(0, 200) : '')
+                short_description: p.short_description || (p.description ? p.description.replace(/<[^>]+>/g, '').slice(0, 200) : ''),
+                rating: p.average_rating || p.rating || 0,
+                rating_count: p.rating_count || 0,
+                reviews_count: p.rating_count || 0
             };
         });
 

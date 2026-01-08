@@ -276,7 +276,10 @@ setInterval(cleanExpiredCache, 10 * 60 * 1000); // Every 10 minutes
       "price": "899",
       "matchScore": 85,
       "ingredients": ["salicylic acid", "niacinamide", "zinc"],
-      "images": [{"src": "https://..."}]
+      "images": [{"src": "https://..."}],
+      "rating": 4.5,
+      "rating_count": 127,
+      "reviews_count": 127
     }
   ],
   "skinAnalysis": {
